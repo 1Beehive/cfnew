@@ -2,100 +2,186 @@ name: Generate and Obfuscate Worker Script
 
 on:
   workflow_dispatch:
+
   push:
     branches:
-      - '**'  # 仅匹配分支推送，排除标签推送
+      - '**'
     paths:
       - '明文源吗'
 
 jobs:
   build-and-obfuscate:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: 20
+          cache: npm
 
-      - name: Install Obfuscator
-        run: npm install javascript-obfuscator
+      - name: Install dependencies
+        run: |
+          npm install javascript-obfuscator terser
 
-      - name: Obfuscate from local source file
+      - name: Obfuscate and Compress
         run: |
           cat > obfuscate.js << 'EOF'
           const JavaScriptObfuscator = require('javascript-obfuscator');
+          const terser = require('terser');
           const fs = require('fs');
           const path = require('path');
-          
-          const sourceFileName = '明文源吗';
-          const outputFileName = '少年你相信光吗';
-          const sourceFilePath = path.join(process.cwd(), sourceFileName);
 
-          if (!fs.existsSync(sourceFilePath)) {
-            console.error('错误：在路径 \'' + sourceFilePath + '\' 未找到源文件。请确保您的仓库根目录有名为 \'明文源吗\' 的文件。');
-            process.exit(1);
-          }
+          (async () => {
 
-          const originalCode = fs.readFileSync(sourceFilePath, 'utf8');
+            const sourceFileName = '明文源吗';
+            const outputFileName = '少年你相信光吗';
 
-          if (!originalCode || originalCode.trim().length === 0) {
-            console.error('错误：源文件 ' + sourceFileName + ' 为空。');
-            process.exit(1);
-          }
+            const sourceFilePath = path.join(
+              process.cwd(),
+              sourceFileName
+            );
 
-          const obfuscationOptions = {
+            if (!fs.existsSync(sourceFilePath)) {
+              console.error(
+                `Source file not found: ${sourceFilePath}`
+              );
+              process.exit(1);
+            }
+
+            const originalCode =
+              fs.readFileSync(
+                sourceFilePath,
+                'utf8'
+              );
+
+            if (
+              !originalCode ||
+              originalCode.trim().length === 0
+            ) {
+              console.error(
+                `${sourceFileName} is empty`
+              );
+              process.exit(1);
+            }
+
+            const obfuscationOptions = {
+
               compact: true,
-              controlFlowFlattening: false,
-              controlFlowFlatteningThreshold: 0,
+
+              controlFlowFlattening: true,
+              controlFlowFlatteningThreshold: 0.75,
+
               deadCodeInjection: false,
+
               stringArray: true,
               stringArrayEncoding: ['base64'],
-              stringArrayThreshold: 1.0,
+              stringArrayThreshold: 1,
+
               stringArrayRotate: true,
               stringArrayShuffle: true,
-              stringArrayWrappersCount: 2,
-              stringArrayWrappersChainedCalls: false,
-              stringArrayWrappersParametersMaxCount: 3,
-              renameGlobals: true,
-              identifierNamesGenerator: 'mangled-shuffled',
-              identifierNamesCache: null,
-              identifiersPrefix: '',
-              renameProperties: false,
-              renamePropertiesMode: 'safe',
-              ignoreImports: false,
-              target: 'browser',
-              numbersToExpressions: false,
-              simplify: false,
-              splitStrings: true,
-              splitStringsChunkLength: 1,
-              transformObjectKeys: false,
-              unicodeEscapeSequence: true,
-              selfDefending: false,
-              debugProtection: false,
-              debugProtectionInterval: 0,
-              disableConsoleOutput: true,
-              domainLock: []
-          };
 
-          const obfuscatedCode = JavaScriptObfuscator.obfuscate(originalCode, obfuscationOptions).getObfuscatedCode();
-          
-          fs.writeFileSync(path.join(process.cwd(), outputFileName), obfuscatedCode, 'utf8');
-          console.log('成功将 \'' + sourceFileName + '\' 混淆并保存至 \'' + outputFileName + '\'。');
+              stringArrayWrappersCount: 5,
+
+              renameGlobals: true,
+
+              identifierNamesGenerator:
+                'hexadecimal',
+
+              numbersToExpressions: true,
+
+              simplify: true,
+
+              splitStrings: true,
+              splitStringsChunkLength: 5,
+
+              unicodeEscapeSequence: false,
+
+              selfDefending: false,
+
+              debugProtection: false,
+
+              disableConsoleOutput: true,
+
+              transformObjectKeys: true,
+
+              target: 'browser'
+            };
+
+            console.log(
+              'Starting obfuscation...'
+            );
+
+            const obfuscatedCode =
+              JavaScriptObfuscator
+                .obfuscate(
+                  originalCode,
+                  obfuscationOptions
+                )
+                .getObfuscatedCode();
+
+            console.log(
+              'Starting terser compression...'
+            );
+
+            const minified =
+              await terser.minify(
+                obfuscatedCode,
+                {
+                  compress: true,
+                  mangle: true
+                }
+              );
+
+            if (
+              !minified ||
+              !minified.code
+            ) {
+              console.error(
+                'Terser compression failed'
+              );
+              process.exit(1);
+            }
+
+            fs.writeFileSync(
+              path.join(
+                process.cwd(),
+                outputFileName
+              ),
+              minified.code,
+              'utf8'
+            );
+
+            console.log(
+              `Generated: ${outputFileName}`
+            );
+
+          })().catch(err => {
+            console.error(err);
+            process.exit(1);
+          });
+
           EOF
+
           node obfuscate.js
 
-      - name: Commit and push the obfuscated file
+      - name: Commit and Push
         run: |
-          git config --global user.name 'GitHub Actions Bot'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add '少年你相信光吗'
-          if git diff --staged --quiet; then
-            echo "No changes to commit, the obfuscated file is already up-to-date."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "少年你相信光吗"
+
+          if git diff --cached --quiet; then
+            echo "No changes detected."
           else
-            git commit -m "部署用这个"
+            git commit -m "部署用这个 [skip ci]"
             git push
           fi
